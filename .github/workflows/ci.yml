@@ -1,0 +1,110 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv run --frozen ruff check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv run --frozen pyright
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      # --frozen: use the committed lock, never re-resolve in CI.
+      - run: uv run --frozen pytest -q
+      # Boots the real ASGI app on loopback: /health open, /ready 503 with no
+      # store, /mcp gated.
+      - run: uv run --frozen python scripts/smoke.py
+
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # Fails when pyproject.toml has changed without `uv lock` being re-run.
+      - run: uv lock --check
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Export the lock the way the image installs it
+        run: |
+          uv export --format requirements-txt --no-dev --no-emit-project \
+            --locked -o requirements-audit.txt
+      - name: Audit
+        run: |
+          uvx pip-audit@2.10.1 --requirement requirements-audit.txt
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: |
+          podman build -t victoria-logs-mcp:ci .
+      - name: Build tools are not in the runtime image
+        run: |
+          container_id=$(podman run -d -e LOGS_MCP_TOKEN=ci-token \
+            -e VICTORIA_LOGS_URL=http://127.0.0.1:1 \
+            -e MCP_HOST=127.0.0.1 -e MCP_PORT=8000 victoria-logs-mcp:ci)
+          podman exec "$container_id" sh -c 'command -v uv || command -v pip' \
+            && { echo "uv or pip leaked into the runtime image"; exit 1; } \
+            || echo "no uv or pip in the runtime image"
+          podman exec "$container_id" python -c \
+            'import mcp, uvicorn, victorialogs; print("deps present")'
+          podman exec "$container_id" python -c "
+          import time, urllib.request, urllib.error
+          deadline = time.time() + 30
+          while True:
+              try:
+                  urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)
+                  break
+              except Exception:
+                  if time.time() > deadline:
+                      raise
+                  time.sleep(0.5)
+          try:
+              urllib.request.urlopen(urllib.request.Request(
+                  'http://127.0.0.1:8000/mcp', data=b'{}', method='POST',
+                  headers={'Content-Type': 'application/json'}), timeout=5)
+              raise SystemExit('unauthorised request was served')
+          except urllib.error.HTTPError as err:
+              assert err.code == 401, err.code
+          # The store is deliberately unreachable: liveness is up, readiness
+          # is not, and the two must not be the same answer.
+          try:
+              urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)
+              raise SystemExit('readiness claimed ready with no store')
+          except urllib.error.HTTPError as err:
+              assert err.code == 503, err.code
+          print('health open, ready 503, mcp gated')
+          "
+          podman rm -f "$container_id"

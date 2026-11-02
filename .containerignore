@@ -1,0 +1,16 @@
+# Keep the build context to what the image actually needs. Without this,
+# .git and every test file are shipped to the daemon on each deploy.
+# uv.lock and pyproject.toml are build inputs and stay in.
+.git
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+tests/
+scripts/
+.github/
+*.md
+Containerfile
+.containerignore

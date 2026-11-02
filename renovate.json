@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "docker:pinDigests"],
+  "packageRules": [
+    {
+      "matchManagers": ["dockerfile"],
+      "groupName": "container base images"
+    },
+    {
+      "matchManagers": ["pep621"],
+      "groupName": "python dependencies"
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true
+  }
+}

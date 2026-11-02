@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+# Written by the audit job in CI.
+requirements-audit.txt
+# Local deploy secrets; stack/deploy/install.sh writes these outside the tree, so
+# this only guards against a stray copy in the repository.
+deploy/*.env
+htmlcov/
+.coverage

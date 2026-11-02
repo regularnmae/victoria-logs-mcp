@@ -1,0 +1,53 @@
+[project]
+name = "victoria-logs-mcp"
+version = "0.1.0"
+description = "Read-only MCP server for VictoriaLogs (LogsQL search, stats, pipeline health)."
+requires-python = ">=3.12"
+
+# Runtime dependencies. The log-store client is stdlib-only on purpose (see
+# victorialogs.py): this server makes one HTTP GET to one store on the podman
+# network, so it needs no third-party HTTP client. uv.lock pins the full
+# closure with hashes; the image installs from a hash-verified export of it.
+dependencies = [
+    "mcp>=2.3.0",
+    # Both are pulled in transitively by mcp, but server.py imports them
+    # directly, so they are declared rather than borrowed.
+    "pydantic>=2.14.2",
+    "uvicorn>=0.31.1",
+]
+
+# Dev-only. uv installs this group by default, which is what makes
+# `uv run pytest` work with no venv of your own.
+[dependency-groups]
+dev = [
+    "anyio>=4.5",
+    "pytest>=8.3",
+    "ruff>=0.6",
+    # The nodejs extra bundles Node, so `uv run pyright` works on a machine
+    # with no node on PATH.
+    "pyright[nodejs]>=1.1.414",
+]
+
+# server.py is a script at the repo root, not a package: without this uv tries
+# to build a wheel of the project itself and fails.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+# server.py sits at the repo root and is imported as a top-level module.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["server.py", "victorialogs.py", "healthcheck.py", "tests", "scripts"]
+# The floor from requires-python, not the image's Python: code has to
+# typecheck on the oldest Python the manifest allows.
+pythonVersion = "3.12"
