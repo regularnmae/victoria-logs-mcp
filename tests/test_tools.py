@@ -98,8 +98,36 @@ def test_error_summary_selects_error_and_worse(call, fake_client) -> None:
     call("error_summary", since="2h", limit=7)
     query = fake_client.queries[0][0]
     assert "priority:in(emerg,alert,crit,err)" in query
-    assert "stats by (container, unit)" in query
+    assert "stats by (_time:1m, container, unit)" in query
+    assert "count() as minutes" in query
+    assert "sum(n) as entries" in query
+    assert "max(n) as peak" in query
     assert query.endswith("limit 7")
+
+
+def test_error_summary_reports_the_window_length(call, fake_client) -> None:
+    fake_client.rows = [{"minutes": "3", "entries": "20", "peak": "12", "container": "x"}]
+    payload = _rows(call("error_summary", since="6h"))
+    assert payload["window_minutes"] == 360
+    assert payload["groups"][0] == {
+        "minutes": "3",
+        "entries": "20",
+        "peak": "12",
+        "container": "x",
+    }
+
+
+def test_error_summary_omits_the_window_for_an_instant(call, fake_client) -> None:
+    payload = _rows(call("error_summary", since="2026-11-02T00:00:00Z"))
+    assert "window_minutes" not in payload
+
+
+def test_duration_minutes() -> None:
+    assert server._duration_minutes("30s") == 1
+    assert server._duration_minutes("5m") == 5
+    assert server._duration_minutes("2h") == 120
+    assert server._duration_minutes("1d") == 1440
+    assert server._duration_minutes("2026-11-02T00:00:00Z") is None
 
 
 def test_list_field_values_asks_the_store_for_values(call, fake_client) -> None:

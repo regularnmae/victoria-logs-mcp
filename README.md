@@ -19,7 +19,7 @@ Seven tools, all read-only:
 | `search_logs` | A LogsQL query inside a time window, newest entries first |
 | `tail_logs` | The unfiltered recent view |
 | `top_sources` | Entries per container, busiest first |
-| `error_summary` | Error-and-worse entries grouped by container and unit |
+| `error_summary` | Error-and-worse lines as bursts per container and unit: `minutes`, `entries`, `peak` |
 | `list_field_values` | The distinct containers, units, hosts or priorities |
 | `get_log_health` | Whether entries are still arriving, and how old the newest is |
 | `get_context` | The entries around one instant, oldest first |
@@ -71,6 +71,14 @@ keep the answer to a size a model can read.
 Caps are the same everywhere: 100 entries by default, 1000 at most, a message
 truncated at 8 KiB, and a 512 KiB response budget. A response that hits the
 budget says `"truncated": true` rather than quietly returning less.
+
+`error_summary` counts bursts rather than lines. journald writes one entry per
+line, so a 20-line traceback is 20 "errors"; the tool therefore folds entries
+into one-minute buckets first and reports `minutes` (buckets with at least one
+error — the incident-shaped number), `entries` (the raw line volume) and `peak`
+(the busiest single minute). `window_minutes` is the window's own length, so
+`minutes: 360` over `since: "6h"` means every minute: background noise, not
+thirty incidents.
 
 ## Running it
 

@@ -49,8 +49,14 @@ whole stack. The unit and `npm-network` live there, not here.
   `get_log_health` and `get_context` ask for an explicit `| sort by (_time)`
   because they must not depend on that. `_time` values are RFC3339 UTC.
 - **`stats` rows have no `_msg`.** A tool that returns rows from a `| stats`
-  pipe returns the aggregate fields (`n`, `container`, `unit`) as the store
-  sends them — `_entry` is only for log rows.
+  pipe returns the aggregate fields as the store sends them — `_entry` is only
+  for log rows.
+- **`error_summary` is two stats on purpose.** journald writes one entry per
+  line, so a 20-line traceback is 20 "errors". The query folds by
+  `(_time:1m, container, unit)` first, then aggregates to `minutes` (buckets
+  with at least one error), `entries` (lines) and `peak` (busiest minute).
+  Reverting to a single `stats by (container, unit) count()` makes the count a
+  line count again, which is what it was built to stop being.
 - **Caps live in `server.py`**: `DEFAULT_LIMIT` 100, `MAX_LIMIT` 1000,
   `MAX_MESSAGE_BYTES` 8 KiB, `MAX_RESPONSE_BYTES` 512 KiB. The schema's
   `Field(le=…)` and the `_limit` clamp must agree; `tests/test_schemas.py`

@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -127,8 +128,18 @@ HEALTH_MAX_AGE_S = _env_float("LOGS_HEALTH_MAX_AGE_S", 900.0)
 # accepts an RFC3339 instant (`_time:2026-11-02T10:00:00Z`), which is useful
 # for "since that deploy", so both are allowed -- and nothing else, because
 # `since` is interpolated into the query rather than sent as a parameter.
-_DURATION = re.compile(r"^[0-9]+(?:ms|s|m|h|d|w|y)$")
+_DURATION = re.compile(r"^([0-9]+)(ms|s|m|h|d|w|y)$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$")
+# Seconds per LogsQL duration unit, for turning `since` into a bucket count.
+_DURATION_SECONDS = {
+    "ms": 0.001,
+    "s": 1,
+    "m": 60,
+    "h": 3600,
+    "d": 86400,
+    "w": 604800,
+    "y": 31536000,
+}
 # A field name is sent as its own request parameter, so this is defence in
 # depth rather than the only guard: it keeps a typo from becoming a 400 with
 # a store-internal message.
@@ -155,6 +166,20 @@ def _time_filter(since: str) -> str:
 def _limit(value: int) -> int:
     """Clamp a limit into the range the tools advertise."""
     return max(1, min(int(value), MAX_LIMIT))
+
+
+def _duration_minutes(since: str) -> int | None:
+    """How many one-minute buckets a `since` window covers, if it is a duration.
+
+    An RFC3339 instant has no length, so the answer is None and the caller
+    leaves the field out rather than inventing one.
+    """
+    match = _DURATION.match(since.strip())
+    if not match:
+        return None
+    value, unit = match.groups()
+    seconds = int(value) * _DURATION_SECONDS[unit]
+    return max(1, math.ceil(seconds / 60))
 
 
 def _render(payload: Any) -> str:
@@ -281,12 +306,29 @@ def _sources(since: str, limit: int) -> dict[str, Any]:
 
 
 def _errors(since: str, limit: int) -> dict[str, Any]:
+    """Error-and-worse lines folded into one-minute buckets, then per source.
+
+    Two stages on purpose. Journald splits a multi-line traceback into one
+    entry per line, so a raw count says how many *lines* were written, not how
+    many times something went wrong -- one traceback of twenty lines looks
+    like twenty incidents. Folding by minute first makes `minutes` the
+    incident-shaped number (minutes in which at least one error appeared),
+    while `entries` keeps the raw volume and `peak` says how dense the worst
+    minute was. A source that logs one line every minute for the whole window
+    is background; thirty minutes at 500 lines each is a fault.
+    """
     query = (
         f"{_time_filter(since)} priority:in(emerg,alert,crit,err)"
-        f" | stats by (container, unit) count() as n"
-        f" | sort by (n desc) | limit {_limit(limit)}"
+        f" | stats by (_time:1m, container, unit) count() as n"
+        f" | stats by (container, unit) count() as minutes, sum(n) as entries,"
+        f" max(n) as peak"
+        f" | sort by (minutes desc, entries desc) | limit {_limit(limit)}"
     )
-    return {"since": since, "groups": client.query(query)}
+    payload: dict[str, Any] = {"since": since, "groups": client.query(query)}
+    window = _duration_minutes(since)
+    if window is not None:
+        payload["window_minutes"] = window
+    return payload
 
 
 def _field_values(field: str, since: str, limit: int) -> dict[str, Any]:
@@ -419,11 +461,15 @@ def error_summary(
     since: Annotated[str, Field(min_length=1, max_length=32)] = "1h",
     limit: Annotated[int, Field(ge=1, le=200)] = 20,
 ) -> str:
-    """Count error-and-worse entries per container and unit.
+    """Summarise error-and-worse lines as bursts per container and unit.
 
-    "Error and worse" is `emerg`, `alert`, `crit` and `err` -- what an operator
-    means by the bad ones. Host scripts have a `unit` and no `container`, so
-    both are grouped; an empty string means the source did not set that field.
+    "Error and worse" is `emerg`, `alert`, `crit` and `err`. Each group reports
+    `minutes` (one-minute buckets in which at least one such line appeared --
+    the incident-shaped number), `entries` (the raw lines, so a multi-line
+    traceback counts many) and `peak` (the busiest single minute). Host scripts
+    have a `unit` and no `container`, so both are grouped; an empty string
+    means the source did not set that field. `window_minutes` is the window's
+    own length, so `minutes: 360` over `since:"6h"` means every minute.
 
     Args:
         since: Window to summarise: `1h`, `24h`, `7d`, or an RFC3339 instant.
