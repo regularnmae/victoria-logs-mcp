@@ -44,6 +44,19 @@ returns:
 | `unit` | The systemd unit, for host-script output |
 | `host` | The machine-id-derived host label |
 | `priority` | `emerg` … `debug`; BoltMesh's app level overrides journald's |
+| `log_type` | only on rows a *file* source produced: `npm_access`, `npm_error`, `npm_raw` |
+
+Two things never reach journald and are read as files by the same shipper, so
+they appear here with the same labels: Suricata's alerts (`unit=suricata.service`)
+and nginx-proxy-manager's access and error logs (`container=nginx-proxy-manager`,
+plus `log_type`). That second one is how "who asked for this, and what did the
+backend answer" is a store query: an access row's message reads
+`<client> <METHOD> <scheme> <vhost> "<path>" <status>`, and an error row's
+`priority` comes from nginx's own `[error]`/`[warn]`, so
+`priority:in(emerg,alert,crit,err)` finds upstream failures. Both shapes carry
+extra fields (`path`, `http_status`, `remote_addr`, `vhost`, `user_agent`) that
+these tools do not return -- use those only to *filter*, or `scripts/logs.sh
+--json` on the host when you need the whole row.
 
 Retention is time-based and size-capped (14 days / 10 GiB by default in the
 stack), so an empty answer for an old window may mean the entries were
@@ -60,13 +73,20 @@ language:
 container:"lightningd"                       one container
 unit:"monitor.service"                       one host script
 priority:in(emerg,alert,crit,err)            error and worse
+log_type:"npm_access" ~"/.env"               probe attempts, from NPM's own log
 ~"timeout|refused"                           a regex over the message
 container:"bitcoind" | stats count() as n    a pipe
 ```
 
-The field names above are the ones to filter on; anything a source attached
-beyond them (suricata's `http.url`, say) is not returned by these tools, which
-keep the answer to a size a model can read.
+Filtering is not limited to the fields above -- LogsQL takes any field a source
+attached, and `log_type` / `path` / `http_status` are all valid there. What is
+limited is what comes *back*: the summary returns the table above plus the
+message, because a raw row can carry twenty fields and fill a context window.
+
+One quoting trap when you write a `query` by hand: a backslash inside a LogsQL
+quoted string is itself escaped, so a regex for a literal dot is `~"\\."` --
+`~"\."` is rejected as an invalid escape. `scripts/logs.sh --grep` doubles them
+for you; a hand-written `query` does not.
 
 Caps are the same everywhere: 100 entries by default, 1000 at most, a message
 truncated at 8 KiB, and a 512 KiB response budget. A response that hits the

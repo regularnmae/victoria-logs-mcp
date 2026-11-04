@@ -146,10 +146,17 @@ _DURATION_SECONDS = {
 _FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 
 # The fields `vector` labels every entry with (see the stack's vector.toml
-# remap): the time, the message, and where it came from. Anything else a
-# source attached (suricata's `http.url`, say) is left out of the summary on
-# purpose -- a raw row can carry twenty fields and fill a context window.
-_CORE_FIELDS = ("_time", "container", "unit", "host", "priority")
+# remap): the time, the message, where it came from, and what kind of line it
+# is. Anything else a source attached (suricata's `http.url`, an nginx access
+# line's `path`/`http_status`, say) is left out of the summary on purpose -- a
+# raw row can carry twenty fields and fill a context window.
+#
+# `log_type` earns a place here because it is the one label that separates a
+# file source's rows from the same container's stdout: nginx-proxy-manager
+# writes its own output to journald AND its access/error logs to files, and both
+# arrive as container=nginx-proxy-manager. journald rows never set it, so it
+# appears only where a source does (npm_access, npm_error, npm_raw).
+_CORE_FIELDS = ("_time", "container", "unit", "host", "priority", "log_type")
 
 
 def _time_filter(since: str) -> str:
